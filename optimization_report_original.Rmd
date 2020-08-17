@@ -1,0 +1,160 @@
+---
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    theme: yeti
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, echo=F, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(knitr)
+library(DT)
+library(patchwork)
+library(kableExtra)
+library(plotly)
+opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, print=FALSE, verbose=TRUE)
+
+presentation <- theme(axis.text.x = element_text(size=10, face="bold", color="black"),
+                      axis.text.y = element_text(size=10, face="bold", color="black"),
+                      axis.title.x = element_text(size=14, face="bold", color="black", vjust=-1),
+                      axis.title.y = element_text(size=14, face="bold", color="black", vjust=2),
+                      strip.text.x = element_text(size=12, face="bold", color="black"),
+                      strip.text.y = element_text(size=12, face="bold", color="black"),
+                      panel.spacing = unit(0.50, "lines"),
+                      plot.margin  = unit(c(0.8,0.8,0.8,0.8), "cm"),
+                      plot.title   = element_text(size=24, face="bold",vjust=2))
+```
+## Overview
+The following report details the methods used to determine appropriate filter thresholds for SNV variant calls.
+
+<br>
+
+## Creating simulated data
+On the site level, three major filters were applied to obtain high-quality variants: variant quality normalized by read depth (QD), strand odds ratio (SOR) and Fisherstrand (FS). To find the optimal filter thresholds, the following steps were taken. Note the filter thresholds were only optimized for SNPs.  
+
+<br>
+
+* 1. A "truth" set of variants were created using either a subset of real variants from 2018 release, or randomly selected positions on the genome. The results were the same with either set of truth variants so only the former were shown below. 
+
+<br>
+
+* 2. The truth set of variants were inserted in N2.bam with bamsurgeon (20d431e).
+
+```{r, out.width = "70%", fig.align="center"}
+knitr::include_graphics("simulated_data.png")
+```
+
+<br>
+
+* 3. Variants were called with the wi-gatk-nf pipeline.
+
+<br>
+
+## Optimize the QD filter
+To reduce complexity, the filter thresholds were optimized one at a time. When optimizing the QD filter for example, no other filters were further applied. 
+
+The optimal QD threshold were determined as follows:
+
+<br>
+
+* 1. For one filter threshold, here shows example QD > 10, variants called in step 3 that passed the filters were considered detected, and those that failed the filter were considered undetected.
+
+```{r}
+vcf_exp=read_tsv("vcf_example.txt")
+
+vcf_exp %>% select(-is_in_truth, -category) %>% knitr::kable(align='c') %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, font_size = 14)
+```
+
+<br>
+
+* 2. Each variant, depending on whether it is detected and whether it is in the truth set, will fall into 1 of the 4 categories: true positive, true negative, false positive and false negative.
+
+```{r}
+vcf_exp %>% select(CHROM, POS, is_detected, is_in_truth, category) %>% knitr::kable(align='c') %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, font_size = 14)
+```
+
+<br>
+
+* 3. A confusion matrix can then be created using the variant counts for each category.
+
+```{r}
+confusion_matrix <- read.delim("confusion_matrix0.txt", row.names = 1, stringsAsFactors=FALSE)
+
+knitr::kable(confusion_matrix, align='c') %>% kable_styling(full_width = F, font_size = 14) %>%  column_spec(1, bold = T, color="#212121", border_right = T)
+
+```
+
+<br>
+
+* 4. Filter thresholds were chosen to maximize true positive rate and precision, while minimizing false positive rate.
+```{r,  fig.width=9, fig.height=4}
+load("7b.site_level_ROC_vsN20426.RData")
+
+cm_all_QD = mutate(cm_all_QD, final_threshold = ifelse(QD==20, 1, 0)) %>% mutate(final_threshold=as.factor(final_threshold))
+
+p1=ggplot(cm_all_QD) + geom_point(aes(x=Precision, y=Sensitivity, color=final_threshold)) + scale_color_manual(values=c("black", "red")) + theme(legend.position="none")
+
+
+p2=ggplot(cm_all_QD) + geom_point(aes(x=1-Specificity, y=Sensitivity, color=final_threshold)) + scale_color_manual(values=c("black", "red")) 
+
+subplot(ggplotly(p1, tooltip="plotly_label"), ggplotly(p2, tooltip="plotly_label"), titleX = TRUE, titleY = TRUE, shareY = FALSE, margin=0.065)
+```
+
+<br>
+
+## Optimize the SOR filter
+* The same steps were taken to find optimal SOR threshold.
+```{r,  fig.width=9, fig.height=4}
+cm_all_SOR = mutate(cm_all_SOR, final_threshold = ifelse(SOR==5, 1, 0)) %>% mutate(final_threshold=as.factor(final_threshold))
+
+p1=ggplot(cm_all_SOR) + geom_point(aes(x=Precision, y=Sensitivity, color=final_threshold)) + scale_color_manual(values=c("black", "red")) + theme(legend.position="none") 
+
+
+p2=ggplot(cm_all_SOR) + geom_point(aes(x=1-Specificity, y=Sensitivity, color=final_threshold)) + scale_color_manual(values=c("black", "red"))
+
+subplot(ggplotly(p1, tooltip="plotly_label"), ggplotly(p2, tooltip="plotly_label"), titleX = TRUE, titleY = TRUE, shareY = FALSE, margin=0.065)
+```
+
+<br> 
+
+## Optimize the FS filter
+* The same steps were taken to find optimal FS threshold.
+```{r,  fig.width=9, fig.height=4}
+cm_all_FS = mutate(cm_all_FS, final_threshold = ifelse(FS==100, 1, 0)) %>% mutate(final_threshold=as.factor(final_threshold)) 
+
+p1=ggplot(cm_all_FS) + geom_point(aes(x=Precision, y=Sensitivity, color=final_threshold, plotly_label=FS)) + scale_color_manual(values=c("black", "red")) + theme(legend.position="none") 
+
+
+p2=ggplot(cm_all_FS) + geom_point(aes(x=1-Specificity, y=Sensitivity, color=final_threshold)) + scale_color_manual(values=c("black", "red")) 
+
+
+subplot(ggplotly(p1, tooltip="plotly_label"), ggplotly(p2, tooltip="plotly_label"), titleX = TRUE, titleY = TRUE, shareY = FALSE, margin=0.065)
+```
+
+<br>
+
+## QD, SOR, FS filter in combination
+* Here shows different combination of QD, SOR and FS thresholds. The thresholds determined from optimizing each filter threshold individually as shown above (red point) is very close to the most optimal combination of thresholds.
+
+```{r,  fig.width=10, fig.height=5}
+cm_all_ALL = mutate(cm_all_ALL, final_threshold = ifelse(QD==20 & SOR ==5 & FS==100, 1, 0)) %>% mutate(final_threshold=as.factor(final_threshold))
+
+p1=ggplot(cm_all_ALL) + geom_point(aes(x=Precision, y=Sensitivity, color=final_threshold, plotly_label0=QD, plotly_label1=SOR, plotly_label2=FS), size = 0.4) +
+    geom_point(data=filter(cm_all_ALL, QD==20, SOR==5, FS==100), aes(x=Precision, y=Sensitivity, color=final_threshold), size = 2.5) +
+scale_color_manual(values=c("black", "red")) + theme(legend.position="none") + presentation
+
+
+p2=ggplot(cm_all_ALL) + geom_point(aes(x=1-Specificity, y=Sensitivity, color=final_threshold, plotly_label0=QD, plotly_label1=SOR, plotly_label2=FS), size = 0.4) +
+        geom_point(data=filter(cm_all_ALL, QD==20, SOR==5, FS==100), aes(x=1-Specificity, y=Sensitivity, color=final_threshold), size = 2.5) +
+    scale_color_manual(values=c("black", "red")) + theme(legend.position="none") + presentation
+
+p1+p2
+#subplot(ggplotly(p1, tooltip = c("plotly_label0", "plotly_label1", "plotly_label2")) , ggplotly(p2, tooltip = c("plotly_label0", "plotly_label1", "plotly_label2")))
+```
+
+
